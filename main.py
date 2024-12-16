@@ -133,18 +133,26 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
     try:
         # 檢查訊息格式並解析
         if bot.user.mentioned_in(message):
+            user_message = None  # 初始化用戶訊息變數
+            name = None  # 初始化名稱變數
+
             # 如果訊息包含附件，檢查是否有 .txt 文件
             if message.attachments:
                 txt_file = next((att for att in message.attachments if att.filename.endswith('.txt')), None)
                 if txt_file:
-                    # 下載並讀取文件內容
-                    async with aiofiles.open(f"temp_{txt_file.filename}", mode="wb") as file:
-                        await txt_file.save(file.name)
+                    try:
+                        # 下載並讀取文件內容
+                        async with aiofiles.open(f"temp_{txt_file.filename}", mode="wb") as file:
+                            await txt_file.save(file.name)
 
-                    async with aiofiles.open(f"temp_{txt_file.filename}", mode="r", encoding="utf-8") as file:
-                        user_message = await file.read()
+                        async with aiofiles.open(f"temp_{txt_file.filename}", mode="r", encoding="utf-8") as file:
+                            user_message = await file.read()
 
-                    os.remove(f"temp_{txt_file.filename}")  # 刪除臨時文件
+                        os.remove(f"temp_{txt_file.filename}")  # 刪除臨時文件
+                    except Exception as e:
+                        await message.channel.send("讀取文件失敗，請確認上傳的 .txt 文件格式正確。")
+                        logger.error("讀取文件時發生錯誤：%s", str(e))
+                        return
                 else:
                     await message.channel.send("請上傳 .txt 文件作為輸入。")
                     return
@@ -156,15 +164,21 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
                 parts = first_line.split(" ", 2)
 
                 # 確保 parts 的長度足夠
-                if len(parts) < 3:
+                if len(parts) >= 3:
+                    _, name, *info = parts
+                    remaining_info = "\n".join(remaining_lines) if remaining_lines else ""
+                    user_message = f"{' '.join(info)}\n{remaining_info}".strip()
+                else:
                     await message.channel.send("訊息格式錯誤。請使用正確的格式。")
                     return
 
-                _, name, *info = parts
-                remaining_info = "\n".join(remaining_lines) if remaining_lines else ""
-                user_message = f"{' '.join(info)}\n{remaining_info}".strip()
+            # 確保 name 和 user_message 已正確設置
+            if name is None or user_message is None:
+                await message.channel.send("無法解析名稱或訊息內容，請確認格式正確。")
+                logger.warning("無法解析名稱或訊息內容")
+                return
 
-            # 確保 name 有定義並轉換名稱
+            # 轉換名稱
             converted_name = NAME_MAPPING.get(name, None)
             if not converted_name:
                 await message.channel.send(f"未知的名稱：{name}")
@@ -183,6 +197,7 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
                 finally:
                     if os.path.exists(file_path):
                         os.remove(file_path)
+
 
 
     except Exception as e:
