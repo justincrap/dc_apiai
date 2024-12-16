@@ -192,7 +192,7 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
 
         # 確保 name 和 user_message 已被正確設置
         if not name:
-            name = "default"  # 提供一個安全的默認值
+            name = "4o"  # 提供一個安全的默認值
         if not user_message:
             await message.channel.send("未提供有效的訊息內容。")
             return
