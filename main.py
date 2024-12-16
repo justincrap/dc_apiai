@@ -118,112 +118,71 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
 
     # 只處理 ALLOWED_CHANNELS 的訊息
     if not guild_id or (guild_id, channel_id) not in allowed_channels:
-        return  # 忽略不在 ALLOWED_CHANNELS 的訊息
-
-    # 獲取伺服器與頻道名稱
-    guild_name = message.guild.name if message.guild else "DM"
-    channel_name = message.channel.name if hasattr(message.channel, "name") else "Unknown"
-    channel_type = "討論串" if isinstance(message.channel, discord.Thread) else "頻道"
+        return
 
     # 記錄收到的訊息
     logger.info(
-        "[訊息記錄] 時間: %s, 伺服器: %s, %s: %s, 用戶: %s, 訊息: %s",
+        "[訊息記錄] 時間: %s, 伺服器: %s, 頻道: %s, 用戶: %s, 訊息: %s",
         message.created_at,
-        guild_name,
-        channel_type,
-        channel_name,
+        message.guild.name if message.guild else "DM",
+        message.channel.name if hasattr(message.channel, "name") else "Unknown",
         message.author.name,
         message.content
     )
 
     try:
-        # 判斷是否為討論串
-        is_thread = isinstance(message.channel, discord.Thread)
-
-        # 刪除討論串邏輯
-        if is_thread and message.content.strip() == "!del":
-            thread_name = message.channel.name
-            await message.channel.delete()
-            logger.info(
-                "[討論串刪除] 時間: %s, 討論串: %s, 由用戶: %s 觸發",
-                message.created_at,
-                thread_name,
-                message.author.name
-            )
-            return
-
         if bot.user.mentioned_in(message):
-            # 解析用戶訊息
-            content_lines = message.content.splitlines()
-            content = "\n".join(line.rstrip() for line in content_lines)
-            first_line, *remaining_lines = content.split("\n", 1)
-            parts = first_line.split(" ", 2)
-            if len(parts) < 3:
-                await message.channel.send("訊息格式錯誤。請使用正確的格式。")
-                logger.warning(
-                    "[訊息格式錯誤] 時間: %s, 用戶: %s, 訊息: %s",
-                    message.created_at,
-                    message.author.name,
-                    content
-                )
-                return
-            _, name, *info = parts
-            remaining_info = "\n".join(remaining_lines) if remaining_lines else ""
-            user_message = f"{' '.join(info)}\n{remaining_info}".strip()
+            # 如果訊息包含附件，檢查是否有 .txt 文件
+            if message.attachments:
+                txt_file = next((att for att in message.attachments if att.filename.endswith('.txt')), None)
+                if txt_file:
+                    # 下載並讀取文件內容
+                    async with aiofiles.open(f"temp_{txt_file.filename}", mode="wb") as file:
+                        await txt_file.save(file.name)
+
+                    async with aiofiles.open(f"temp_{txt_file.filename}", mode="r", encoding="utf-8") as file:
+                        user_message = await file.read()
+
+                    os.remove(f"temp_{txt_file.filename}")  # 刪除臨時文件
+                else:
+                    await message.channel.send("請上傳 .txt 文件作為輸入。")
+                    return
+            else:
+                # 如果沒有附件，則按原邏輯處理用戶訊息
+                content_lines = message.content.splitlines()
+                content = "\n".join(line.rstrip() for line in content_lines)
+                first_line, *remaining_lines = content.split("\n", 1)
+                parts = first_line.split(" ", 2)
+                if len(parts) < 3:
+                    await message.channel.send("訊息格式錯誤。請使用正確的格式。")
+                    return
+                _, name, *info = parts
+                remaining_info = "\n".join(remaining_lines) if remaining_lines else ""
+                user_message = f"{' '.join(info)}\n{remaining_info}".strip()
 
             # 轉換名稱
             converted_name = NAME_MAPPING.get(name, None)
             if not converted_name:
                 await message.channel.send(f"未知的名稱：{name}")
-                logger.warning(
-                    "[未知名稱] 時間: %s, 名稱: %s, 訊息: %s",
-                    message.created_at,
-                    name,
-                    content
-                )
                 return
 
             # 獲取 OpenAI 回覆
             openai_reply = await fetch_openai_response(openai_client, converted_name, user_message, logger)
 
-            # 提取回覆的第一句，作為討論串名稱
-            first_sentence = openai_reply.split(".")[0].strip()
-            if len(first_sentence) > 100:  # Discord 討論串名稱限制
-                first_sentence = first_sentence[:97] + "..."
-            thread_name = first_sentence if first_sentence else f"討論：{converted_name}"
-
+            # 發送回覆
             if len(openai_reply) <= 2000:
-                # 如果訊息長度小於等於 2000 字符，直接發送
-                if is_thread:
-                    await message.channel.send(openai_reply)
-                else:
-                    thread = await message.create_thread(name=thread_name, auto_archive_duration=60)
-                    await thread.send(openai_reply)
+                await message.channel.send(openai_reply)
             else:
-                # 如果訊息過長，儲存到文件並發送
-                file_path = await save_response_to_file(openai_reply)  # 生成唯一檔案名稱
-
+                file_path = await save_response_to_file(openai_reply)
                 try:
-                    # 發送文件
-                    if is_thread:
-                        await message.channel.send(file=discord.File(file_path))
-                    else:
-                        thread = await message.create_thread(name=thread_name, auto_archive_duration=60)
-                        await thread.send(file=discord.File(file_path))
+                    await message.channel.send(file=discord.File(file_path))
                 finally:
-                    # 刪除文件
                     if os.path.exists(file_path):
                         os.remove(file_path)
 
     except Exception as e:
-        logger.error(
-            "[錯誤記錄] 時間: %s, 伺服器: %s, 頻道: %s, 用戶: %s, 錯誤內容: %s",
-            message.created_at,
-            guild_name,
-            channel_name,
-            message.author.name,
-            str(e)
-        )
+        logger.error("處理訊息時發生錯誤：%s", e)
+
 
 # 主函數
 def main():
