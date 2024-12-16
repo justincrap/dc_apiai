@@ -131,6 +131,7 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
     )
 
     try:
+        # 檢查訊息格式並解析
         if bot.user.mentioned_in(message):
             # 如果訊息包含附件，檢查是否有 .txt 文件
             if message.attachments:
@@ -153,14 +154,17 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
                 content = "\n".join(line.rstrip() for line in content_lines)
                 first_line, *remaining_lines = content.split("\n", 1)
                 parts = first_line.split(" ", 2)
+
+                # 確保 parts 的長度足夠
                 if len(parts) < 3:
                     await message.channel.send("訊息格式錯誤。請使用正確的格式。")
                     return
+
                 _, name, *info = parts
                 remaining_info = "\n".join(remaining_lines) if remaining_lines else ""
                 user_message = f"{' '.join(info)}\n{remaining_info}".strip()
 
-            # 轉換名稱
+            # 確保 name 有定義並轉換名稱
             converted_name = NAME_MAPPING.get(name, None)
             if not converted_name:
                 await message.channel.send(f"未知的名稱：{name}")
@@ -179,6 +183,7 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
                 finally:
                     if os.path.exists(file_path):
                         os.remove(file_path)
+
 
     except Exception as e:
         logger.error("處理訊息時發生錯誤：%s", e)
