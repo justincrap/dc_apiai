@@ -155,10 +155,18 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
     guild_id = message.guild.id if message.guild else None
     channel_id = message.channel.id
 
+    # 確保處理允許的頻道
     if not guild_id or (guild_id, channel_id) not in allowed_channels:
         return
 
-    logger.info("[訊息記錄] 時間: %s, 用戶: %s, 訊息: %s", message.created_at, message.author.name, message.content)
+    # 處理討論串的刪除邏輯
+    if isinstance(message.channel, discord.Thread) and message.content.strip() == "!del":
+        thread_name = message.channel.name
+        await message.channel.delete()
+        logger.info(f"[討論串刪除] 討論串: {thread_name}, 由 {message.author.name} 觸發")
+        return
+
+    logger.info("[訊息記錄] 用戶: %s, 訊息: %s", message.author.name, message.content)
 
     user_message = None
     model_name = None
@@ -171,35 +179,43 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
             await message.channel.send(error)
             return
 
-        # 檢查模型名稱是否有效
+        # 如果沒有附件，解析訊息
+        if not user_message:
+            content_lines = message.content.splitlines()
+            content = "\n".join(line.rstrip() for line in content_lines)
+            first_line, *remaining_lines = content.split("\n", 1)
+            parts = first_line.split(" ", 2)
+
+            if len(parts) >= 3:
+                _, name, *info = parts
+                remaining_info = "\n".join(remaining_lines) if remaining_lines else ""
+                model_name = name.strip()
+                user_message = f"{' '.join(info)}\n{remaining_info}".strip()
+            else:
+                await message.channel.send("訊息格式錯誤，請使用正確的格式或上傳 .txt 文件。")
+                return
+
+        # 檢查模型名稱有效性
         converted_name = NAME_MAPPING.get(model_name, None)
         if not converted_name:
             await message.channel.send(f"未知的模型名稱：{model_name}")
             return
 
-        # 檢查訊息內容
-        if not user_message:
-            await message.channel.send("訊息內容為空，請檢查文件格式。")
-            return
-
-        # 獲取 OpenAI 回覆
+        # 發送至 OpenAI API 並獲取回覆
         openai_reply = await fetch_openai_response(openai_client, converted_name, user_message, logger)
 
-        # 發送回覆
-        if len(openai_reply) <= 2000:
+        # 發送回覆到討論串內
+        if isinstance(message.channel, discord.Thread):  # 如果已經在討論串
             await message.channel.send(openai_reply)
         else:
-            file_path = await save_response_to_file(openai_reply)
-            try:
-                await message.channel.send(file=discord.File(file_path))
-            finally:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
+            # 創建一個新討論串並發送回覆
+            thread_name = f"AI 回覆：{model_name}" if model_name else "AI 討論串"
+            thread = await message.create_thread(name=thread_name, auto_archive_duration=60)
+            await thread.send(openai_reply)
+
     except Exception as e:
         logger.error("處理訊息時發生錯誤：%s", str(e))
         await message.channel.send("處理您的請求時出現錯誤，請稍後重試。")
-
-
 
 # 主函數
 def main():
