@@ -158,17 +158,37 @@ def split_message(content: str, max_length: int = 2000) -> list:
 
     return messages
 
+def is_allowed(message: discord.Message, allowed_channels: set, logger: logging.Logger) -> bool:
+    guild_id = message.guild.id if message.guild else None
+    channel_id = message.channel.id
+
+    if message.channel.type == discord.ChannelType.private:
+        logger.debug("私訊不處理")
+        return False
+
+    if message.channel.type == discord.ChannelType.public_thread or message.channel.type == discord.ChannelType.private_thread:
+        # 如果是討論串，檢查父頻道是否在 allowed_channels
+        parent = message.channel.parent
+        if parent and (guild_id, parent.id) in allowed_channels:
+            return True
+        else:
+            logger.debug("討論串的父頻道不在允許的範圍內")
+            return False
+
+    # 如果是主要頻道，直接檢查
+    if (guild_id, channel_id) in allowed_channels:
+        return True
+
+    logger.debug("頻道不在允許的範圍內")
+    return False
+
 # 修改 handle_message 函數
 async def handle_message(message: discord.Message, bot: commands.Bot, openai_client: AsyncOpenAI, allowed_channels: set, logger: logging.Logger):
     if message.author == bot.user:
         return
 
-    # 獲取伺服器與頻道資訊
-    guild_id = message.guild.id if message.guild else None
-    channel_id = message.channel.id
-
-    # 只處理 ALLOWED_CHANNELS 的訊息
-    if not guild_id or (guild_id, channel_id) not in allowed_channels:
+    # 使用新的允許頻道檢查
+    if not is_allowed(message, allowed_channels, logger):
         return  # 忽略不在 ALLOWED_CHANNELS 的訊息
 
     # 獲取伺服器與頻道名稱
@@ -191,8 +211,9 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
         # 判斷是否為討論串
         is_thread = isinstance(message.channel, discord.Thread)
 
-        # 刪除討論串邏輯
+        # 刪除討論串邏輯：放在最前面
         if is_thread and message.content.strip() == "!del":
+            logger.info("收到討論串內的 !del 命令，嘗試刪除討論串")
             thread_name = message.channel.name
             await message.channel.delete()
             logger.info(
@@ -203,7 +224,11 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
             )
             return
 
+        # 紀錄訊息中提及的用戶
+        logger.debug(f"訊息提及的用戶: {[user.name for user in message.mentions]}")
+
         if bot.user.mentioned_in(message):
+            logger.info("收到 @AI 提及的訊息，開始處理")
             # 解析用戶訊息
             content_lines = message.content.splitlines()
             content = "\n".join(line.rstrip() for line in content_lines)
@@ -264,6 +289,7 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
             message.author.name,
             str(e)
         )
+
 # 主函數
 def main():
     # 設定日誌
