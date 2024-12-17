@@ -176,15 +176,33 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
     model_name = None
 
     try:
-        # 處理附件（.txt 文件）
-        model_name, user_message, error = await process_attachments(message)
-        if error:
-            logger.warning(f"附件處理錯誤：{error}")
-            await message.channel.send(error)
-            return
+        # 處理附件中的 .txt 文件
+        if message.attachments:
+            txt_file = next((att for att in message.attachments if att.filename.endswith('.txt')), None)
+            if txt_file:
+                # 下載和讀取文件
+                async with aiofiles.open(f"temp_{txt_file.filename}", mode="wb") as file:
+                    await txt_file.save(file.name)
 
-        # 如果沒有附件，解析訊息格式
-        if not user_message:
+                async with aiofiles.open(f"temp_{txt_file.filename}", mode="r", encoding="utf-8") as file:
+                    content = await file.read()
+
+                os.remove(f"temp_{txt_file.filename}")  # 刪除臨時文件
+
+                # 解析文件的第一行（格式: 模型名稱/訊息內容）
+                first_line, *remaining_lines = content.split("\n", 1)
+                if "/" in first_line:
+                    model_name, user_message = first_line.split("/", 1)
+                    user_message = user_message.strip() + ("\n" + remaining_lines[0].strip() if remaining_lines else "")
+                else:
+                    await message.channel.send("格式錯誤，第一行應為 '模型名稱/內容'。")
+                    return
+            else:
+                await message.channel.send("未找到有效的 .txt 文件。")
+                return
+
+        # 如果沒有附件，則解析訊息內容
+        else:
             content_lines = message.content.splitlines()
             content = "\n".join(line.rstrip() for line in content_lines)
             first_line, *remaining_lines = content.split("\n", 1)
@@ -199,21 +217,16 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
                 await message.channel.send("訊息格式錯誤，請使用正確的格式或上傳 .txt 文件。")
                 return
 
-        # 確保模型名稱存在
+        # 驗證模型名稱
         converted_name = NAME_MAPPING.get(model_name, None)
         if not converted_name:
             await message.channel.send(f"未知的模型名稱：{model_name}")
             return
 
-        # 檢查訊息內容
-        if not user_message:
-            await message.channel.send("訊息內容為空，請檢查文件格式。")
-            return
-
         # 獲取 OpenAI 回覆
         openai_reply = await fetch_openai_response(openai_client, converted_name, user_message, logger)
 
-        # 回覆邏輯：如果在討論串內則直接回覆，否則創建討論串
+        # 在討論串內直接回覆，否則創建新討論串
         if isinstance(message.channel, discord.Thread):
             await message.channel.send(openai_reply)
         else:
