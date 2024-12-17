@@ -110,31 +110,44 @@ async def save_response_to_file(response: str) -> str:
 # 檢查附件並讀取檔案內容
 async def process_attachments(message):
     """
-    檢查附件，讀取 .txt 文件內容。
+    檢查附件，讀取 .txt 文件內容，並解析模型名稱和訊息。
+    格式: 模型名稱/內容
     """
     if not message.attachments:
-        return None, "訊息中沒有附件。"
+        return None, None, "訊息中沒有附件。"
 
     # 找到第一個 .txt 文件
     txt_file = next((att for att in message.attachments if att.filename.endswith('.txt')), None)
     if not txt_file:
-        return None, "附件中未包含 .txt 文件。"
+        return None, None, "附件中未包含 .txt 文件。"
 
     try:
-        # 下載文件
+        # 下載和讀取 .txt 文件內容
         async with aiofiles.open(f"temp_{txt_file.filename}", mode="wb") as file:
             await txt_file.save(file.name)
 
-        # 讀取文件內容
         async with aiofiles.open(f"temp_{txt_file.filename}", mode="r", encoding="utf-8") as file:
             content = await file.read()
 
         os.remove(f"temp_{txt_file.filename}")  # 刪除臨時文件
-        return content, None
-    except Exception as e:
-        return None, f"讀取文件失敗：{str(e)}"
 
-# 處理訊息的主要函數
+        # 解析文件內容
+        first_line, *remaining_lines = content.split("\n", 1)
+        if "/" not in first_line:
+            return None, None, "格式錯誤，第一行必須包含模型名稱與內容（格式：模型名稱/內容）。"
+
+        # 提取模型名稱和訊息內容
+        model_name, *user_message_parts = first_line.split("/", 1)
+        user_message = user_message_parts[0].strip() if user_message_parts else ""
+
+        # 剩下的行加入訊息內容
+        if remaining_lines:
+            user_message += "\n" + remaining_lines[0].strip()
+
+        return model_name.strip(), user_message.strip(), None
+    except Exception as e:
+        return None, None, f"讀取文件失敗：{str(e)}"
+
 async def handle_message(message: discord.Message, bot: commands.Bot, openai_client: AsyncOpenAI, allowed_channels: set, logger: logging.Logger):
     if message.author == bot.user:
         return
@@ -142,65 +155,31 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
     guild_id = message.guild.id if message.guild else None
     channel_id = message.channel.id
 
-    # 檢查是否允許處理此頻道的訊息
     if not guild_id or (guild_id, channel_id) not in allowed_channels:
         return
 
-    # 日誌記錄
-    logger.info(
-        "[訊息記錄] 時間: %s, 伺服器: %s, 頻道: %s, 用戶: %s, 訊息: %s",
-        message.created_at,
-        message.guild.name if message.guild else "DM",
-        message.channel.name if hasattr(message.channel, "name") else "Unknown",
-        message.author.name,
-        message.content
-    )
+    logger.info("[訊息記錄] 時間: %s, 用戶: %s, 訊息: %s", message.created_at, message.author.name, message.content)
 
-    # 初始化變數
     user_message = None
-    name = None
+    model_name = None
 
     try:
         # 嘗試處理附件
-        if message.attachments:
-            txt_file = next((att for att in message.attachments if att.filename.endswith('.txt')), None)
-            if txt_file:
-                # 下載和讀取 .txt 文件內容
-                async with aiofiles.open(f"temp_{txt_file.filename}", mode="wb") as file:
-                    await txt_file.save(file.name)
-                async with aiofiles.open(f"temp_{txt_file.filename}", mode="r", encoding="utf-8") as file:
-                    user_message = await file.read()
-                os.remove(f"temp_{txt_file.filename}")
-            else:
-                await message.channel.send("未找到 .txt 文件，請重新上傳。")
-                return
-
-        # 如果沒有附件，解析文字訊息
-        if not user_message:
-            content_lines = message.content.splitlines()
-            content = "\n".join(line.rstrip() for line in content_lines)
-            first_line, *remaining_lines = content.split("\n", 1)
-            parts = first_line.split(" ", 2)
-
-            if len(parts) >= 3:
-                _, name, *info = parts
-                remaining_info = "\n".join(remaining_lines) if remaining_lines else ""
-                user_message = f"{' '.join(info)}\n{remaining_info}".strip()
-            else:
-                await message.channel.send("訊息格式錯誤，請使用正確的格式或上傳 .txt 文件。")
-                return
-
-        # 確保 name 和 user_message 已被正確設置
-        if not name:
-            name = "4o"  # 提供一個安全的默認值
-        if not user_message:
-            await message.channel.send("未提供有效的訊息內容。")
+        model_name, user_message, error = await process_attachments(message)
+        if error:
+            logger.warning(f"附件處理錯誤：{error}")
+            await message.channel.send(error)
             return
 
-        # 轉換名稱
-        converted_name = NAME_MAPPING.get(name, None)
+        # 檢查模型名稱是否有效
+        converted_name = NAME_MAPPING.get(model_name, None)
         if not converted_name:
-            await message.channel.send(f"未知的名稱：{name}")
+            await message.channel.send(f"未知的模型名稱：{model_name}")
+            return
+
+        # 檢查訊息內容
+        if not user_message:
+            await message.channel.send("訊息內容為空，請檢查文件格式。")
             return
 
         # 獲取 OpenAI 回覆
@@ -216,10 +195,10 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
             finally:
                 if os.path.exists(file_path):
                     os.remove(file_path)
-
     except Exception as e:
         logger.error("處理訊息時發生錯誤：%s", str(e))
         await message.channel.send("處理您的請求時出現錯誤，請稍後重試。")
+
 
 
 # 主函數
