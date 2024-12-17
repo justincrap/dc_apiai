@@ -166,20 +166,24 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
         logger.info(f"[討論串刪除] 討論串: {thread_name}, 由 {message.author.name} 觸發")
         return
 
+    # 確認訊息是否提到 Bot
+    if not bot.user.mentioned_in(message):
+        return
+
     logger.info("[訊息記錄] 用戶: %s, 訊息: %s", message.author.name, message.content)
 
     user_message = None
     model_name = None
 
     try:
-        # 嘗試處理附件
+        # 處理附件（.txt 文件）
         model_name, user_message, error = await process_attachments(message)
         if error:
             logger.warning(f"附件處理錯誤：{error}")
             await message.channel.send(error)
             return
 
-        # 如果沒有附件，解析訊息
+        # 如果沒有附件，解析訊息格式
         if not user_message:
             content_lines = message.content.splitlines()
             content = "\n".join(line.rstrip() for line in content_lines)
@@ -195,20 +199,24 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
                 await message.channel.send("訊息格式錯誤，請使用正確的格式或上傳 .txt 文件。")
                 return
 
-        # 檢查模型名稱有效性
+        # 確保模型名稱存在
         converted_name = NAME_MAPPING.get(model_name, None)
         if not converted_name:
             await message.channel.send(f"未知的模型名稱：{model_name}")
             return
 
-        # 發送至 OpenAI API 並獲取回覆
+        # 檢查訊息內容
+        if not user_message:
+            await message.channel.send("訊息內容為空，請檢查文件格式。")
+            return
+
+        # 獲取 OpenAI 回覆
         openai_reply = await fetch_openai_response(openai_client, converted_name, user_message, logger)
 
-        # 發送回覆到討論串內
-        if isinstance(message.channel, discord.Thread):  # 如果已經在討論串
+        # 回覆邏輯：如果在討論串內則直接回覆，否則創建討論串
+        if isinstance(message.channel, discord.Thread):
             await message.channel.send(openai_reply)
         else:
-            # 創建一個新討論串並發送回覆
             thread_name = f"AI 回覆：{model_name}" if model_name else "AI 討論串"
             thread = await message.create_thread(name=thread_name, auto_archive_duration=60)
             await thread.send(openai_reply)
