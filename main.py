@@ -4,8 +4,7 @@ from dotenv import load_dotenv
 import discord
 from discord.ext import commands
 from openai import AsyncOpenAI
-import aiofiles
-import uuid
+import re
 
 # 全局常數
 NAME_MAPPING = {
@@ -94,30 +93,102 @@ async def fetch_openai_response(openai_client: AsyncOpenAI, model: str, user_mes
         logger.error("OpenAI API 請求失敗: %s", e)
         return "抱歉，發生錯誤，無法獲取回覆。"
 
-# 非同步函數：將回應內容儲存到文本檔案
-async def save_response_to_file(response: str) -> str:
+# 新增分割訊息的函數
+def split_message(content: str, max_length: int = 2000) -> list:
     """
-    將回應內容儲存到唯一的文本檔案。
-
-    :param response: OpenAI 回覆內容。
-    :return: 儲存的文件路徑。
+    將訊息根據代碼塊和最大長度進行分割。
     """
-    unique_filename = f"message_{uuid.uuid4()}.txt"
-    async with aiofiles.open(unique_filename, mode="w", encoding="utf-8") as file:
-        await file.write(response)
-    return unique_filename
+    # 使用正則表達式找到所有代碼塊
+    codeblock_pattern = re.compile(r'```[\s\S]*?```')
+    parts = []
+    last_index = 0
 
-# 處理訊息的主要函數
+    for match in codeblock_pattern.finditer(content):
+        start, end = match.span()
+        # 添加非代碼塊部分
+        if start > last_index:
+            parts.append(content[last_index:start])
+        # 添加代碼塊部分
+        parts.append(content[start:end])
+        last_index = end
+
+    # 添加剩餘的非代碼塊部分
+    if last_index < len(content):
+        parts.append(content[last_index:])
+
+    # 現在將 parts 進一步分割，確保每部分不超過 max_length
+    messages = []
+    current_message = ""
+
+    for part in parts:
+        # 如果單個部分已經超過 max_length，則需要進一步分割
+        if len(part) > max_length:
+            if '```' in part:
+                # 處理代碼塊
+                codeblocks = codeblock_pattern.findall(part)
+                for codeblock in codeblocks:
+                    if len(codeblock) > max_length:
+                        # 無法處理過長的代碼塊，直接分割
+                        for i in range(0, len(codeblock), max_length):
+                            messages.append(codeblock[i:i + max_length])
+                    else:
+                        if len(current_message) + len(codeblock) > max_length:
+                            if current_message:
+                                messages.append(current_message)
+                                current_message = ""
+                        messages.append(codeblock)
+            else:
+                # 處理普通文本
+                for i in range(0, len(part), max_length):
+                    chunk = part[i:i + max_length]
+                    if len(current_message) + len(chunk) > max_length:
+                        if current_message:
+                            messages.append(current_message)
+                            current_message = ""
+                    current_message += chunk
+        else:
+            if len(current_message) + len(part) > max_length:
+                if current_message:
+                    messages.append(current_message)
+                    current_message = ""
+            current_message += part
+
+    if current_message:
+        messages.append(current_message)
+
+    return messages
+
+def is_allowed(message: discord.Message, allowed_channels: set, logger: logging.Logger) -> bool:
+    guild_id = message.guild.id if message.guild else None
+    channel_id = message.channel.id
+
+    if message.channel.type == discord.ChannelType.private:
+        logger.debug("私訊不處理")
+        return False
+
+    if message.channel.type == discord.ChannelType.public_thread or message.channel.type == discord.ChannelType.private_thread:
+        # 如果是討論串，檢查父頻道是否在 allowed_channels
+        parent = message.channel.parent
+        if parent and (guild_id, parent.id) in allowed_channels:
+            return True
+        else:
+            logger.debug("討論串的父頻道不在允許的範圍內")
+            return False
+
+    # 如果是主要頻道，直接檢查
+    if (guild_id, channel_id) in allowed_channels:
+        return True
+
+    logger.debug("頻道不在允許的範圍內")
+    return False
+
+# 修改 handle_message 函數
 async def handle_message(message: discord.Message, bot: commands.Bot, openai_client: AsyncOpenAI, allowed_channels: set, logger: logging.Logger):
     if message.author == bot.user:
         return
 
-    # 獲取伺服器與頻道資訊
-    guild_id = message.guild.id if message.guild else None
-    channel_id = message.channel.id
-
-    # 只處理 ALLOWED_CHANNELS 的訊息
-    if not guild_id or (guild_id, channel_id) not in allowed_channels:
+    # 使用新的允許頻道檢查
+    if not is_allowed(message, allowed_channels, logger):
         return  # 忽略不在 ALLOWED_CHANNELS 的訊息
 
     # 獲取伺服器與頻道名稱
@@ -140,8 +211,9 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
         # 判斷是否為討論串
         is_thread = isinstance(message.channel, discord.Thread)
 
-        # 刪除討論串邏輯
+        # 刪除討論串邏輯：放在最前面
         if is_thread and message.content.strip() == "!del":
+            logger.info("收到討論串內的 !del 命令，嘗試刪除討論串")
             thread_name = message.channel.name
             await message.channel.delete()
             logger.info(
@@ -152,7 +224,11 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
             )
             return
 
+        # 紀錄訊息中提及的用戶
+        logger.debug(f"訊息提及的用戶: {[user.name for user in message.mentions]}")
+
         if bot.user.mentioned_in(message):
+            logger.info("收到 @AI 提及的訊息，開始處理")
             # 解析用戶訊息
             content_lines = message.content.splitlines()
             content = "\n".join(line.rstrip() for line in content_lines)
@@ -192,28 +268,17 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
                 first_sentence = first_sentence[:97] + "..."
             thread_name = first_sentence if first_sentence else f"討論：{converted_name}"
 
-            if len(openai_reply) <= 2000:
-                # 如果訊息長度小於等於 2000 字符，直接發送
-                if is_thread:
-                    await message.channel.send(openai_reply)
-                else:
-                    thread = await message.create_thread(name=thread_name, auto_archive_duration=60)
-                    await thread.send(openai_reply)
-            else:
-                # 如果訊息過長，儲存到文件並發送
-                file_path = await save_response_to_file(openai_reply)  # 生成唯一檔案名稱
+            # 分割訊息
+            split_replies = split_message(openai_reply, max_length=2000)
 
-                try:
-                    # 發送文件
-                    if is_thread:
-                        await message.channel.send(file=discord.File(file_path))
-                    else:
-                        thread = await message.create_thread(name=thread_name, auto_archive_duration=60)
-                        await thread.send(file=discord.File(file_path))
-                finally:
-                    # 刪除文件
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
+            if is_thread:
+                target_channel = message.channel
+            else:
+                target_channel = await message.create_thread(name=thread_name, auto_archive_duration=60)
+
+            # 逐條發送分割後的訊息
+            for reply in split_replies:
+                await target_channel.send(reply)
 
     except Exception as e:
         logger.error(
