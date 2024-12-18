@@ -8,7 +8,8 @@ import re
 
 # 全局常數
 NAME_MAPPING = {
-    "o1": "o1-preview",
+    "o1": "o1",
+    "o1p": "o1-preview",
     "o1m": "o1-mini",
     "4o": "chatgpt-4o-latest"
 }
