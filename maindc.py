@@ -35,7 +35,7 @@ def setup_logging():
 def load_configuration():
     load_dotenv()
     bot_token = os.getenv("DC_BOT_TOKEN")
-    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+    anthropic_api_key = os.getenv("ANTHROPIC_KEY")
     openai_api_key = os.getenv("OPENAI_KEY")
     raw_channel_mapping = os.getenv("ALLOWED_CHANNEL_IDS", "")
 
