@@ -278,7 +278,10 @@ async def handle_message(message: discord.Message, bot: commands.Bot, anthropic_
                 return
 
             _, name, *info = parts
-            user_message = f"{' '.join(info)}\n{'\n'.join(remaining_lines).strip()}"
+            # 修正 f-string 換行問題
+            info_part = ' '.join(info)
+            remaining_part = '\n'.join(remaining_lines).strip()
+            user_message = f"{info_part}\n{remaining_part}"
 
             # 轉換名稱
             converted_name = NAME_MAPPING.get(name, None)
