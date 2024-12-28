@@ -119,7 +119,7 @@ async def fetch_anthropic_response(anthropic_client: anthropic.Anthropic, model:
             system="You are a helpful assistant.",
             messages=[{"role": "user", "content": [{"type": "text", "text": user_message}]}]
         )
-        return message["content"].strip()
+        return message.content.strip()
     except Exception as e:
         logger.error("Anthropic API 請求失敗: %s", e)
         return "抱歉，發生錯誤，無法獲取回覆。"
