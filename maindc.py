@@ -3,15 +3,20 @@ import logging
 from dotenv import load_dotenv
 import discord
 from discord.ext import commands
-from openai import AsyncOpenAI
+import anthropic  # Anthropic 官方模組
 import re
 
 # 全局常數
 NAME_MAPPING = {
-    #"o1": "o1",
+    # OpenAI 模型名稱
     "o1": "o1-preview",
     "o1m": "o1-mini",
-    "4o": "chatgpt-4o-latest"
+    "4o": "chatgpt-4o-latest",
+
+    # Anthropic 模型名稱
+    "opus": "claude-3-opus-20240229",
+    "sonnet": "claude-3-5-sonnet-20241022",
+    "haiku": "claude-3-5-haiku-20241022"
 }
 
 # 設定日誌
@@ -30,6 +35,7 @@ def setup_logging():
 def load_configuration():
     load_dotenv()
     bot_token = os.getenv("DC_BOT_TOKEN")
+    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
     openai_api_key = os.getenv("OPENAI_KEY")
     raw_channel_mapping = os.getenv("ALLOWED_CHANNEL_IDS", "")
 
@@ -37,12 +43,12 @@ def load_configuration():
         logging.error("缺少 Discord Bot Token (DC_BOT_TOKEN)")
         exit(1)
 
-    if not openai_api_key:
-        logging.error("缺少 OpenAI API Key (OPENAI_KEY)")
+    if not (anthropic_api_key or openai_api_key):
+        logging.error("缺少 Anthropic API Key 或 OpenAI API Key")
         exit(1)
 
     allowed_channels = parse_allowed_channels(raw_channel_mapping)
-    return bot_token, openai_api_key, allowed_channels
+    return bot_token, anthropic_api_key, openai_api_key, allowed_channels
 
 # 解析允許的伺服器與頻道 ID
 def parse_allowed_channels(raw_channel_mapping: str) -> set:
@@ -58,9 +64,10 @@ def parse_allowed_channels(raw_channel_mapping: str) -> set:
             logging.warning(f"條目格式錯誤（缺少冒號）：{entry}")
     return allowed_channels
 
-# 初始化 OpenAI 客戶端
-def initialize_openai_client(api_key: str) -> AsyncOpenAI:
-    return AsyncOpenAI(api_key=api_key)
+# 初始化 Anthropic 客戶端
+def initialize_anthropic_client(api_key: str) -> anthropic.Anthropic:
+    client = anthropic.Anthropic(api_key=api_key)
+    return client
 
 # 初始化 Discord Bot
 def initialize_bot() -> commands.Bot:
@@ -71,17 +78,54 @@ def initialize_bot() -> commands.Bot:
     bot = commands.Bot(command_prefix="!", intents=intents)
     return bot
 
-# 非同步函數：向 OpenAI API 發送請求並獲取回覆
-async def fetch_openai_response(openai_client: AsyncOpenAI, model: str, user_message: str, logger: logging.Logger) -> str:
-    """
-    向 OpenAI API 發送請求並獲取回覆。
+# 檢查訊息是否來自允許的頻道
+def is_allowed(message: discord.Message, allowed_channels: set, logger: logging.Logger) -> bool:
+    guild_id = message.guild.id if message.guild else None
+    channel_id = message.channel.id
 
-    :param openai_client: 初始化好的 OpenAI 客戶端。
-    :param model: 使用的 OpenAI 模型。
+    if message.channel.type == discord.ChannelType.private:
+        logger.debug("私訊不處理")
+        return False
+
+    if message.channel.type in {discord.ChannelType.public_thread, discord.ChannelType.private_thread}:
+        parent = message.channel.parent
+        if parent and (guild_id, parent.id) in allowed_channels:
+            return True
+        logger.debug("討論串的父頻道不在允許的範圍內")
+        return False
+
+    if (guild_id, channel_id) in allowed_channels:
+        return True
+
+    logger.debug("頻道不在允許的範圍內")
+    return False
+
+# 非同步函數：向 Anthropic API 發送請求並獲取回覆
+async def fetch_anthropic_response(anthropic_client: anthropic.Anthropic, model: str, user_message: str, logger: logging.Logger) -> str:
+    """
+    向 Anthropic API 發送請求並獲取回覆。
+
+    :param anthropic_client: Anthropic 客戶端。
+    :param model: 使用的 Anthropic 模型。
     :param user_message: 用戶提供的內容。
     :param logger: 日誌紀錄器。
-    :return: OpenAI 回應的內容。
+    :return: Anthropic 回應的內容。
     """
+    try:
+        message = anthropic_client.messages.create(
+            model=model,
+            max_tokens=1000,
+            temperature=0.7,
+            system="You are a helpful assistant.",
+            messages=[{"role": "user", "content": [{"type": "text", "text": user_message}]}]
+        )
+        return message["content"].strip()
+    except Exception as e:
+        logger.error("Anthropic API 請求失敗: %s", e)
+        return "抱歉，發生錯誤，無法獲取回覆。"
+
+# 非同步函數：向 OpenAI API 發送請求並獲取回覆
+async def fetch_openai_response(openai_client, model: str, user_message: str, logger: logging.Logger) -> str:
     try:
         response = await openai_client.chat.completions.create(
             model=model,
@@ -159,32 +203,8 @@ def split_message(content: str, max_length: int = 2000) -> list:
 
     return messages
 
-def is_allowed(message: discord.Message, allowed_channels: set, logger: logging.Logger) -> bool:
-    guild_id = message.guild.id if message.guild else None
-    channel_id = message.channel.id
-
-    if message.channel.type == discord.ChannelType.private:
-        logger.debug("私訊不處理")
-        return False
-
-    if message.channel.type == discord.ChannelType.public_thread or message.channel.type == discord.ChannelType.private_thread:
-        # 如果是討論串，檢查父頻道是否在 allowed_channels
-        parent = message.channel.parent
-        if parent and (guild_id, parent.id) in allowed_channels:
-            return True
-        else:
-            logger.debug("討論串的父頻道不在允許的範圍內")
-            return False
-
-    # 如果是主要頻道，直接檢查
-    if (guild_id, channel_id) in allowed_channels:
-        return True
-
-    logger.debug("頻道不在允許的範圍內")
-    return False
-
 # 修改 handle_message 函數
-async def handle_message(message: discord.Message, bot: commands.Bot, openai_client: AsyncOpenAI, allowed_channels: set, logger: logging.Logger):
+async def handle_message(message: discord.Message, bot: commands.Bot, anthropic_client, openai_client, allowed_channels: set, logger: logging.Logger):
     if message.author == bot.user:
         return
 
@@ -235,6 +255,7 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
             content = "\n".join(line.rstrip() for line in content_lines)
             first_line, *remaining_lines = content.split("\n", 1)
             parts = first_line.split(" ", 2)
+
             if len(parts) < 3:
                 await message.channel.send("訊息格式錯誤。請使用正確的格式。")
                 logger.warning(
@@ -244,6 +265,7 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
                     content
                 )
                 return
+
             _, name, *info = parts
             remaining_info = "\n".join(remaining_lines) if remaining_lines else ""
             user_message = f"{' '.join(info)}\n{remaining_info}".strip()
@@ -260,17 +282,19 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
                 )
                 return
 
-            # 獲取 OpenAI 回覆
-            openai_reply = await fetch_openai_response(openai_client, converted_name, user_message, logger)
+            if name in {"opus", "sonnet", "haiku"}:
+                reply = await fetch_anthropic_response(anthropic_client, converted_name, user_message, logger)
+            else:
+                reply = await fetch_openai_response(openai_client, converted_name, user_message, logger)
 
             # 提取回覆的第一句，作為討論串名稱
-            first_sentence = openai_reply.split(".")[0].strip()
+            first_sentence = reply.split(".")[0].strip()
             if len(first_sentence) > 100:  # Discord 討論串名稱限制
                 first_sentence = first_sentence[:97] + "..."
             thread_name = first_sentence if first_sentence else f"討論：{converted_name}"
 
-            # 分割訊息
-            split_replies = split_message(openai_reply, max_length=2000)
+            # 分割回覆
+            split_replies = split_message(reply)
 
             if is_thread:
                 target_channel = message.channel
@@ -278,8 +302,8 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
                 target_channel = await message.create_thread(name=thread_name, auto_archive_duration=60)
 
             # 逐條發送分割後的訊息
-            for reply in split_replies:
-                await target_channel.send(reply)
+            for part in split_replies:
+                await target_channel.channel.send(part)
 
     except Exception as e:
         logger.error(
@@ -295,14 +319,9 @@ async def handle_message(message: discord.Message, bot: commands.Bot, openai_cli
 def main():
     # 設定日誌
     logger = setup_logging()
-
-    # 載入配置
-    bot_token, openai_api_key, allowed_channels = load_configuration()
-
-    # 初始化 OpenAI 客戶端
-    openai_client = initialize_openai_client(openai_api_key)
-
-    # 初始化 Discord Bot
+    bot_token, anthropic_api_key, openai_api_key, allowed_channels = load_configuration()
+    anthropic_client = initialize_anthropic_client(anthropic_api_key)
+    openai_client = None  # 如需初始化 OpenAI，請在此處添加
     bot = initialize_bot()
 
     @bot.event
@@ -311,7 +330,7 @@ def main():
 
     @bot.event
     async def on_message(message):
-        await handle_message(message, bot, openai_client, allowed_channels, logger)
+        await handle_message(message, bot, anthropic_client, openai_client, allowed_channels, logger)
         await bot.process_commands(message)  # 確保命令能被處理
 
     # 啟動 Bot
