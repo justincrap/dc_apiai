@@ -119,7 +119,13 @@ async def fetch_anthropic_response(anthropic_client: anthropic.Anthropic, model:
             system="You are a helpful assistant.",
             messages=[{"role": "user", "content": [{"type": "text", "text": user_message}]}]
         )
-        return message.content.strip()
+        # 處理返回值，提取所有 TextBlock 的 text 屬性
+        if isinstance(message.content, list):
+            content = "\n".join(block.text for block in message.content if hasattr(block, 'text'))
+        else:
+            logger.error("Anthropic API 返回值不是預期的列表格式: %s", message.content)
+            return "Anthropic API 回傳的數據格式異常，請稍後再試。"
+        return content.strip()  # 返回清理後的結果
     except Exception as e:
         logger.error("Anthropic API 請求失敗: %s", e)
         return "抱歉，發生錯誤，無法獲取回覆。"
