@@ -223,7 +223,6 @@ async def handle_message(message: discord.Message, bot: commands.Bot, anthropic_
     channel_name = message.channel.name if hasattr(message.channel, "name") else "Unknown"
     channel_type = "討論串" if isinstance(message.channel, discord.Thread) else "頻道"
 
-    # 記錄收到的訊息
     logger.info(
         "[訊息記錄] 時間: %s, 伺服器: %s, %s: %s, 用戶: %s, 訊息: %s",
         message.created_at,
@@ -238,6 +237,15 @@ async def handle_message(message: discord.Message, bot: commands.Bot, anthropic_
         # 判斷是否為討論串
         is_thread = isinstance(message.channel, discord.Thread)
 
+        if is_thread:
+            # 獲取討論串的父頻道
+            parent_channel = message.channel.parent
+            if not parent_channel:
+                logger.warning("無法找到討論串的父頻道，跳過處理。")
+                return
+
+            logger.info("處理討論串: %s (父頻道: %s)", message.channel.name, parent_channel.name)
+
         # 刪除討論串邏輯：放在最前面
         if is_thread and message.content.strip() == "!del":
             logger.info("收到討論串內的 !del 命令，嘗試刪除討論串")
@@ -250,9 +258,6 @@ async def handle_message(message: discord.Message, bot: commands.Bot, anthropic_
                 message.author.name
             )
             return
-
-        # 紀錄訊息中提及的用戶
-        logger.debug(f"訊息提及的用戶: {[user.name for user in message.mentions]}")
 
         if bot.user.mentioned_in(message):
             logger.info("收到 @AI 提及的訊息，開始處理")
@@ -273,8 +278,7 @@ async def handle_message(message: discord.Message, bot: commands.Bot, anthropic_
                 return
 
             _, name, *info = parts
-            remaining_info = "\n".join(remaining_lines) if remaining_lines else ""
-            user_message = f"{' '.join(info)}\n{remaining_info}".strip()
+            user_message = f"{' '.join(info)}\n{'\n'.join(remaining_lines).strip()}"
 
             # 轉換名稱
             converted_name = NAME_MAPPING.get(name, None)
@@ -288,28 +292,17 @@ async def handle_message(message: discord.Message, bot: commands.Bot, anthropic_
                 )
                 return
 
+            # 獲取回覆
             if name in {"opus", "sonnet", "haiku"}:
                 reply = await fetch_anthropic_response(anthropic_client, converted_name, user_message, logger)
             else:
                 reply = await fetch_openai_response(openai_client, converted_name, user_message, logger)
 
-            # 提取回覆的第一句，作為討論串名稱
-            first_sentence = reply.split(".")[0].strip()
-            if len(first_sentence) > 100:  # Discord 討論串名稱限制
-                first_sentence = first_sentence[:97] + "..."
-            thread_name = first_sentence if first_sentence else f"討論：{converted_name}"
-
-            # 分割回覆
+            # 分割訊息並逐條發送
             split_replies = split_message(reply)
-
-            if is_thread:
-                target_channel = message.channel
-            else:
-                target_channel = await message.create_thread(name=thread_name, auto_archive_duration=60)
-
-            # 逐條發送分割後的訊息
+            target_channel = message.channel if is_thread else await message.create_thread(name=f"討論：{converted_name}", auto_archive_duration=60)
             for part in split_replies:
-                await target_channel.channel.send(part)
+                await target_channel.send(part)
 
     except Exception as e:
         logger.error(
@@ -320,6 +313,7 @@ async def handle_message(message: discord.Message, bot: commands.Bot, anthropic_
             message.author.name,
             str(e)
         )
+
 
 # 主函數
 def main():
