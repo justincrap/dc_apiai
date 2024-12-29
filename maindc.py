@@ -116,7 +116,7 @@ async def fetch_anthropic_response(anthropic_client: anthropic.Anthropic, model:
             model=model,
             max_tokens=1000,
             temperature=0.7,
-            system="You are a helpful assistant.",
+            system="You are a Senior Quant Trader, who could provide useful and accurate trading advice about Algorithmic and Quantitative Trading. Also help with the development of trading strategies and risk management.",
             messages=[{"role": "user", "content": [{"type": "text", "text": user_message}]}]
         )
         # 處理返回值，提取所有 TextBlock 的 text 屬性
