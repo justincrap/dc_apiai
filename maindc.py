@@ -3,12 +3,14 @@ import logging
 from dotenv import load_dotenv
 import discord
 from discord.ext import commands
+from openai import AsyncOpenAI
 import anthropic  # Anthropic 官方模組
 import re
 
 # 全局常數
 NAME_MAPPING = {
     # OpenAI 模型名稱
+    "o1l": "o1",
     "o1": "o1-preview",
     "o1m": "o1-mini",
     "4o": "chatgpt-4o-latest",
@@ -68,6 +70,10 @@ def parse_allowed_channels(raw_channel_mapping: str) -> set:
 def initialize_anthropic_client(api_key: str) -> anthropic.Anthropic:
     client = anthropic.Anthropic(api_key=api_key)
     return client
+
+# 初始化 OpenAI 客戶端
+def initialize_openai_client(api_key: str) -> AsyncOpenAI:
+    return AsyncOpenAI(api_key=api_key)
 
 # 初始化 Discord Bot
 def initialize_bot() -> commands.Bot:
@@ -324,7 +330,7 @@ def main():
     logger = setup_logging()
     bot_token, anthropic_api_key, openai_api_key, allowed_channels = load_configuration()
     anthropic_client = initialize_anthropic_client(anthropic_api_key)
-    openai_client = None  # 如需初始化 OpenAI，請在此處添加
+    openai_client = initialize_openai_client(openai_api_key)  # None  # 如需初始化 OpenAI，請在此處添加
     bot = initialize_bot()
 
     @bot.event
