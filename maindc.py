@@ -16,7 +16,7 @@ NAME_MAPPING = {
     "4o": "chatgpt-4o",
 
     # Anthropic 模型名稱
-    'sonnet3': 'claude-3-7-sonnet-latest',
+    'son37': 'claude-3-7-sonnet-latest',
     "opus": "claude-3-opus-20240229",
     "sonnet": "claude-3-5-sonnet-20241022",
     "haiku": "claude-3-5-haiku-20241022"
