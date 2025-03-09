@@ -10,12 +10,13 @@ import re
 # 全局常數
 NAME_MAPPING = {
     # OpenAI 模型名稱
-    "o1l": "o1",
-    "o1": "o1-preview",
+    "o1": "o1",
+    "o3m": "o3-mini",
     "o1m": "o1-mini",
-    "4o": "chatgpt-4o-latest",
+    "4o": "chatgpt-4o",
 
     # Anthropic 模型名稱
+    'default': 'claude-3-7-sonnet-latest',
     "opus": "claude-3-opus-20240229",
     "sonnet": "claude-3-5-sonnet-20241022",
     "haiku": "claude-3-5-haiku-20241022"
@@ -42,11 +43,11 @@ def load_configuration():
     raw_channel_mapping = os.getenv("ALLOWED_CHANNEL_IDS", "")
 
     if not bot_token:
-        logging.error("缺少 Discord Bot Token (DC_BOT_TOKEN)")
+        logging.error("❌ 缺少 Discord Bot Token (DC_BOT_TOKEN)")
         exit(1)
 
     if not (anthropic_api_key or openai_api_key):
-        logging.error("缺少 Anthropic API Key 或 OpenAI API Key")
+        logging.error("❌ 缺少 Anthropic API Key (ANTHROPIC_KEY)")
         exit(1)
 
     allowed_channels = parse_allowed_channels(raw_channel_mapping)
@@ -61,9 +62,9 @@ def parse_allowed_channels(raw_channel_mapping: str) -> set:
             try:
                 allowed_channels.add((int(server_id.strip()), int(channel_id.strip())))
             except ValueError:
-                logging.warning(f"伺服器或頻道 ID 不是有效的整數：{entry}")
+                logging.warning(f"⚠️ 伺服器或頻道 ID 無效: {entry}")
         else:
-            logging.warning(f"條目格式錯誤（缺少冒號）：{entry}")
+            logging.warning(f"⚠️ 條目格式錯誤（缺少冒號）: {entry}")
     return allowed_channels
 
 # 初始化 Anthropic 客戶端
@@ -90,20 +91,20 @@ def is_allowed(message: discord.Message, allowed_channels: set, logger: logging.
     channel_id = message.channel.id
 
     if message.channel.type == discord.ChannelType.private:
-        logger.debug("私訊不處理")
+        logger.debug("🔒 私訊不處理")
         return False
 
     if message.channel.type in {discord.ChannelType.public_thread, discord.ChannelType.private_thread}:
         parent = message.channel.parent
         if parent and (guild_id, parent.id) in allowed_channels:
             return True
-        logger.debug("討論串的父頻道不在允許的範圍內")
+        logger.debug("🔒 討論串的父頻道不允許")
         return False
 
     if (guild_id, channel_id) in allowed_channels:
         return True
 
-    logger.debug("頻道不在允許的範圍內")
+    logger.debug("🔒 頻道不在允許範圍內")
     return False
 
 # 非同步函數：向 Anthropic API 發送請求並獲取回覆
@@ -427,7 +428,7 @@ async def fetch_anthropic_response(anthropic_client: anthropic.Anthropic, model:
             return "Anthropic API 回傳的數據格式異常，請稍後再試。"
         return content.strip()  # 返回清理後的結果
     except Exception as e:
-        logger.error("Anthropic API 請求失敗: %s", e)
+        logger.error("❌ Anthropic API 請求失敗: %s", e)
         return "抱歉，發生錯誤，無法獲取回覆。"
 
 # 非同步函數：向 OpenAI API 發送請求並獲取回覆
@@ -447,7 +448,7 @@ async def fetch_openai_response(openai_client, model: str, user_message: str, lo
 # 新增分割訊息的函數
 def split_message(content: str, max_length: int = 2000) -> list:
     """
-    將訊息根據代碼塊和最大長度進行分割。
+    將訊息拆分為不超過 `max_length` 的段落，確保 Discord 限制內。
     """
     # 使用正則表達式找到所有代碼塊
     codeblock_pattern = re.compile(r'```[\s\S]*?```')
@@ -560,7 +561,7 @@ async def handle_message(message: discord.Message, bot: commands.Bot, anthropic_
             return
 
         if bot.user.mentioned_in(message):
-            logger.info("收到 @AI 提及的訊息，開始處理")
+            logger.info("📩 收到 @AI 提及的訊息，開始處理")
             # 解析用戶訊息
             content_lines = message.content.splitlines()
             content = "\n".join(line.rstrip() for line in content_lines)
@@ -568,7 +569,7 @@ async def handle_message(message: discord.Message, bot: commands.Bot, anthropic_
             parts = first_line.split(" ", 2)
 
             if len(parts) < 3:
-                await message.channel.send("訊息格式錯誤。請使用正確的格式。")
+                await message.channel.send("⚠️ 訊息格式錯誤，請使用正確格式。")
                 logger.warning(
                     "[訊息格式錯誤] 時間: %s, 用戶: %s, 訊息: %s",
                     message.created_at,
@@ -616,7 +617,6 @@ async def handle_message(message: discord.Message, bot: commands.Bot, anthropic_
             message.author.name,
             str(e)
         )
-
 
 # 主函數
 def main():
